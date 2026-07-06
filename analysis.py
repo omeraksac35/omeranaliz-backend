@@ -13,10 +13,10 @@ teknik analizle güvenilir şekilde yapılamaz.
 """
 
 import pandas as pd
-import yfinance as yf
 
 from fundamentals import evaluate_fundamentals, fetch_fundamentals
 from indicators import ema, macd, rsi, support_resistance
+from yf_client import get_history
 
 RISK_REWARD_RATIO = 2.0
 STOP_LOSS_BUFFER_PCT = 0.02
@@ -37,7 +37,7 @@ def normalize_ticker(raw: str) -> str:
 
 
 def fetch_data(ticker: str, period: str, interval: str) -> pd.DataFrame:
-    df = yf.Ticker(ticker).history(period=period, interval=interval)
+    df = get_history(ticker, period, interval)
     if df.empty:
         raise ValueError(f"{ticker} için veri bulunamadı. Sembolü kontrol et (örn. THYAO, GARAN).")
     return df

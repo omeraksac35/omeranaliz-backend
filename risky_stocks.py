@@ -14,10 +14,9 @@ import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
-import yfinance as yf
-
 from analysis import compute_timeframe, fetch_data, normalize_ticker
 from levels import compute_levels
+from yf_client import get_history, get_info
 
 CURATED_TICKERS = [
     "THYAO", "GARAN", "ASELS", "BIMAS", "EREGL", "KCHOL", "SISE", "TUPRS",
@@ -30,7 +29,7 @@ CURATED_TICKERS = [
 def _compute_metrics(base_symbol: str) -> Optional[dict]:
     ticker = f"{base_symbol}.IS"
     try:
-        df = yf.Ticker(ticker).history(period="3mo", interval="1d")
+        df = get_history(ticker, period="3mo", interval="1d")
         if df.empty or len(df) < 20:
             return None
 
@@ -43,7 +42,7 @@ def _compute_metrics(base_symbol: str) -> Optional[dict]:
         price_30d_ago = float(close.iloc[-21]) if len(close) >= 21 else float(close.iloc[0])
         return_30d_pct = (price - price_30d_ago) / price_30d_ago * 100
 
-        info = yf.Ticker(ticker).info
+        info = get_info(ticker)
         beta = info.get("beta")
 
         return {
@@ -125,7 +124,7 @@ def get_risk_profile(raw_symbol: str) -> dict:
     return_30d_pct = (price - price_30d_ago) / price_30d_ago * 100
 
     try:
-        beta = yf.Ticker(ticker).info.get("beta")
+        beta = get_info(ticker).get("beta")
     except Exception:
         beta = None
 

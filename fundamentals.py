@@ -1,8 +1,8 @@
-import yfinance as yf
+from yf_client import get_info
 
 
 def fetch_fundamentals(ticker: str) -> dict:
-    info = yf.Ticker(ticker).info
+    info = get_info(ticker)
     return {
         "sector": info.get("sector"),
         "long_name": info.get("longName"),

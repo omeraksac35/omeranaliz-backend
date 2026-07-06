@@ -8,7 +8,7 @@ yüzdesini döner. Salt görsel/bilgilendirme amaçlıdır, analiz veya sinyal
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-import yfinance as yf
+from yf_client import get_history
 
 TICKER_TAPE_SYMBOLS = [
     {"symbol": "XU100", "label": "BIST100"},
@@ -25,7 +25,7 @@ TICKER_TAPE_SYMBOLS = [
 def _fetch_one(item: dict) -> Optional[dict]:
     ticker = f"{item['symbol']}.IS"
     try:
-        df = yf.Ticker(ticker).history(period="5d", interval="1d")
+        df = get_history(ticker, period="5d", interval="1d")
         if df.empty or len(df) < 2:
             return None
         close = df["Close"]
