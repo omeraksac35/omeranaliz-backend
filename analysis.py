@@ -38,6 +38,7 @@ def normalize_ticker(raw: str) -> str:
 
 def fetch_data(ticker: str, period: str, interval: str) -> pd.DataFrame:
     df = get_history(ticker, period, interval)
+    df = df[df["Close"].notna()]
     if df.empty:
         raise ValueError(f"{ticker} için veri bulunamadı. Sembolü kontrol et (örn. THYAO, GARAN).")
     return df

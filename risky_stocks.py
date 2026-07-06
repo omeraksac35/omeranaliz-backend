@@ -30,6 +30,7 @@ def _compute_metrics(base_symbol: str) -> Optional[dict]:
     ticker = f"{base_symbol}.IS"
     try:
         df = get_history(ticker, period="3mo", interval="1d")
+        df = df[df["Close"].notna()]
         if df.empty or len(df) < 20:
             return None
 

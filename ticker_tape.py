@@ -26,6 +26,7 @@ def _fetch_one(item: dict) -> Optional[dict]:
     ticker = f"{item['symbol']}.IS"
     try:
         df = get_history(ticker, period="5d", interval="1d")
+        df = df[df["Close"].notna()]
         if df.empty or len(df) < 2:
             return None
         close = df["Close"]
