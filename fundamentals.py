@@ -2,7 +2,10 @@ from yf_client import get_info
 
 
 def fetch_fundamentals(ticker: str) -> dict:
-    info = get_info(ticker)
+    try:
+        info = get_info(ticker)
+    except Exception:
+        info = {}
     return {
         "sector": info.get("sector"),
         "long_name": info.get("longName"),
