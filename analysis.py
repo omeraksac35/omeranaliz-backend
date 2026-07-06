@@ -233,24 +233,32 @@ def build_overall_recommendation(
 
     is_speculative = volatility_pct >= SPECULATIVE_VOLATILITY_THRESHOLD_PCT
 
+    resistance_ref = None
+    if levels["resistance_levels"]:
+        r = levels["resistance_levels"][0]
+        resistance_ref = {
+            "level": r["level"],
+            "pct": round((r["level"] - price) / price * 100, 1),
+            "probability": estimate_move_probability(daily_close, price, r["level"]),
+        }
+
+    support_ref = None
+    if levels["support_levels"]:
+        s = levels["support_levels"][0]
+        support_ref = {
+            "level": s["level"],
+            "pct": round((s["level"] - price) / price * 100, 1),
+            "probability": estimate_move_probability(daily_close, price, s["level"]),
+        }
+
     target = None
     probability = None
-    if direction == "yukarı" and levels["resistance_levels"]:
-        r = levels["resistance_levels"][0]
-        target = {
-            "level": r["level"],
-            "type": "direnç",
-            "target_pct": round((r["level"] - price) / price * 100, 1),
-        }
-        probability = estimate_move_probability(daily_close, price, r["level"])
-    elif direction == "aşağı" and levels["support_levels"]:
-        s = levels["support_levels"][0]
-        target = {
-            "level": s["level"],
-            "type": "destek",
-            "target_pct": round((s["level"] - price) / price * 100, 1),
-        }
-        probability = estimate_move_probability(daily_close, price, s["level"])
+    if direction == "yukarı" and resistance_ref:
+        target = {"level": resistance_ref["level"], "type": "direnç", "target_pct": resistance_ref["pct"]}
+        probability = resistance_ref["probability"]
+    elif direction == "aşağı" and support_ref:
+        target = {"level": support_ref["level"], "type": "destek", "target_pct": support_ref["pct"]}
+        probability = support_ref["probability"]
 
     entry_plan = None
     if final_signal in ("AL", "DİKKATLİ AL"):
@@ -273,6 +281,18 @@ def build_overall_recommendation(
             "note": (
                 "Elinde varsa mevcut fiyat civarında satış/çıkış düşünülebilir. "
                 "Yeniden değerlendirme için en yakın destek seviyesi izlenebilir."
+            ),
+        }
+    elif resistance_ref or support_ref:
+        entry_plan = {
+            "action": "BEKLE",
+            "resistance": resistance_ref,
+            "support": support_ref,
+            "note": (
+                "Net bir AL/SAT sinyali yok. Fiyat direnç seviyesinin üzerine "
+                "kalıcı olarak çıkarsa yukarı yönlü senaryo, destek "
+                "seviyesinin altına inerse aşağı yönlü senaryo güçlenir — "
+                "şimdilik bu seviyeler izlenerek beklenebilir."
             ),
         }
 
