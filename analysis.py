@@ -252,6 +252,30 @@ def build_overall_recommendation(
         }
         probability = estimate_move_probability(daily_close, price, s["level"])
 
+    entry_plan = None
+    if final_signal in ("AL", "DİKKATLİ AL"):
+        entry_plan = {
+            "action": "AL",
+            "buy_level": gunluk["entry_point"],
+            "stop_loss": gunluk["stop_loss"],
+            "take_profit": gunluk["take_profit"],
+            "note": (
+                "Giriş seviyesi olarak güncel fiyat referans alınmıştır. "
+                "Zarar-kes, son dönem destek seviyesinin biraz altına; "
+                "kâr-al, risk/ödül oranına göre hesaplanmıştır."
+            ),
+        }
+    elif final_signal == "SAT":
+        entry_plan = {
+            "action": "SAT",
+            "sell_level": round(price, 4),
+            "watch_level": target["level"] if target else None,
+            "note": (
+                "Elinde varsa mevcut fiyat civarında satış/çıkış düşünülebilir. "
+                "Yeniden değerlendirme için en yakın destek seviyesi izlenebilir."
+            ),
+        }
+
     return {
         "signal": final_signal,
         "is_buy_signal": final_signal in ("AL", "DİKKATLİ AL"),
@@ -260,6 +284,7 @@ def build_overall_recommendation(
         "is_speculative": is_speculative,
         "target": target,
         "probability": probability,
+        "entry_plan": entry_plan,
         "note": (
             "Bu bir yatırım tavsiyesi değildir. Olasılık yüzdesi bir GELECEK "
             "GARANTİSİ değildir — hissenin son 1 yıllık geçmiş fiyat "
