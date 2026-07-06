@@ -12,18 +12,24 @@ belirli bir fiyata ulaşacağına dair bir tahmin İÇERMEZ — böyle bir tahmi
 teknik analizle güvenilir şekilde yapılamaz.
 """
 
+from typing import Optional
+
 import pandas as pd
 
 from fundamentals import evaluate_fundamentals, fetch_fundamentals
 from indicators import ema, macd, rsi, support_resistance
+from levels import compute_levels
 from yf_client import get_history
 
 RISK_REWARD_RATIO = 2.0
 STOP_LOSS_BUFFER_PCT = 0.02
+SPECULATIVE_VOLATILITY_THRESHOLD_PCT = 40.0
+PROBABILITY_WINDOW_TRADING_DAYS = 10
 
 TIMEFRAMES = {
-    "kisa_vadeli": {"label": "Kısa Vadeli (Günlük)", "period": "1y", "interval": "1d", "history_points": 120},
-    "uzun_vadeli": {"label": "Uzun Vadeli (Haftalık)", "period": "3y", "interval": "1wk", "history_points": 104},
+    "saatlik": {"label": "Saatlik", "period": "60d", "interval": "1h", "history_points": 120, "is_intraday": True},
+    "kisa_vadeli": {"label": "Kısa Vadeli (Günlük)", "period": "1y", "interval": "1d", "history_points": 120, "is_intraday": False},
+    "uzun_vadeli": {"label": "Uzun Vadeli (Haftalık)", "period": "3y", "interval": "1wk", "history_points": 104, "is_intraday": False},
 }
 
 
@@ -44,7 +50,9 @@ def fetch_data(ticker: str, period: str, interval: str) -> pd.DataFrame:
     return df
 
 
-def compute_timeframe(df: pd.DataFrame, fund_verdict: str, label: str, history_points: int) -> dict:
+def compute_timeframe(
+    df: pd.DataFrame, fund_verdict: str, label: str, history_points: int, is_intraday: bool = False
+) -> dict:
     close = df["Close"]
     df = df.copy()
     df["ema9"] = ema(close, 9)
@@ -118,9 +126,10 @@ def compute_timeframe(df: pd.DataFrame, fund_verdict: str, label: str, history_p
     take_profit = price + risk * RISK_REWARD_RATIO if risk > 0 else resistance
 
     history_window = df.iloc[-history_points:]
+    date_format = "%Y-%m-%d %H:%M" if is_intraday else "%Y-%m-%d"
     history = [
         {
-            "date": idx.strftime("%Y-%m-%d"),
+            "date": idx.strftime(date_format),
             "close": round(float(row["Close"]), 4),
             "ema9": round(float(row["ema9"]), 4),
             "ema21": round(float(row["ema21"]), 4),
@@ -165,6 +174,104 @@ def build_consistency_note(kisa: dict, uzun: dict) -> str:
     return "Kısa ve uzun vadeli görünüm arasında net bir çelişki yok, ancak net bir uyum da yok (BEKLE ağırlıklı)."
 
 
+def estimate_move_probability(
+    daily_close: pd.Series, current_price: float, target_price: float, window: int = PROBABILITY_WINDOW_TRADING_DAYS
+) -> Optional[dict]:
+    """
+    "Bu seviyeye ulaşma ihtimali" için TAHMİNİ bir gelecek olasılığı değil,
+    hissenin kendi geçmiş verisinden TARİHSEL SIKLIK hesaplar: son 1 yılda
+    her `window` işlem günlük dönemde fiyat en az bu kadar hareket etmiş mi,
+    kaç kere etmiş. Bu bir garanti veya istatistiksel kesinlik iddiası
+    DEĞİLDİR — sadece "geçmişte bu büyüklükte hareketler ne sıklıkla oldu"
+    sorusuna cevap verir.
+    """
+    required_pct = (target_price - current_price) / current_price * 100
+    returns = daily_close.pct_change(window).dropna() * 100
+    total = len(returns)
+    if total < 30:
+        return None
+
+    if required_pct >= 0:
+        hits = int((returns >= required_pct).sum())
+    else:
+        hits = int((returns <= required_pct).sum())
+
+    return {
+        "window_trading_days": window,
+        "required_move_pct": round(required_pct, 1),
+        "probability_pct": round(hits / total * 100, 1),
+        "sample_size": total,
+    }
+
+
+def build_overall_recommendation(
+    saatlik: dict, gunluk: dict, volatility_pct: float, levels: dict, price: float, daily_close: pd.Series
+) -> dict:
+    """
+    Saatlik + günlük teknik sinyalleri birleştirip tek bir AL/SAT/BEKLE
+    önerisi üretir (haftalık vade dahil değildir — bu daha çok kısa vadeli,
+    "şimdi alırsam ne olur" bakış açısıyla ilgilidir).
+    """
+    s_signal, g_signal = saatlik["signal"], gunluk["signal"]
+    s_buy, g_buy = saatlik["is_buy_signal"], gunluk["is_buy_signal"]
+
+    if s_buy and g_buy:
+        final_signal = "DİKKATLİ AL" if "DİKKATLİ AL" in (s_signal, g_signal) else "AL"
+        direction = "yukarı"
+        reason = f"Saatlik ({s_signal}) ve günlük ({g_signal}) sinyaller birlikte yukarı yönü destekliyor."
+    elif s_signal == "SAT" and g_signal == "SAT":
+        final_signal = "SAT"
+        direction = "aşağı"
+        reason = "Saatlik ve günlük sinyaller birlikte aşağı yönü destekliyor."
+    else:
+        final_signal = "BEKLE"
+        direction = None
+        reason = (
+            f"Saatlik ({s_signal}) ve günlük ({g_signal}) sinyaller birbiriyle çelişiyor — "
+            "net bir yön için henüz erken, temkinli olunmalı."
+        )
+
+    is_speculative = volatility_pct >= SPECULATIVE_VOLATILITY_THRESHOLD_PCT
+
+    target = None
+    probability = None
+    if direction == "yukarı" and levels["resistance_levels"]:
+        r = levels["resistance_levels"][0]
+        target = {
+            "level": r["level"],
+            "type": "direnç",
+            "target_pct": round((r["level"] - price) / price * 100, 1),
+        }
+        probability = estimate_move_probability(daily_close, price, r["level"])
+    elif direction == "aşağı" and levels["support_levels"]:
+        s = levels["support_levels"][0]
+        target = {
+            "level": s["level"],
+            "type": "destek",
+            "target_pct": round((s["level"] - price) / price * 100, 1),
+        }
+        probability = estimate_move_probability(daily_close, price, s["level"])
+
+    return {
+        "signal": final_signal,
+        "is_buy_signal": final_signal in ("AL", "DİKKATLİ AL"),
+        "reason": reason,
+        "volatility_pct": round(volatility_pct, 1),
+        "is_speculative": is_speculative,
+        "target": target,
+        "probability": probability,
+        "note": (
+            "Bu bir yatırım tavsiyesi değildir. Olasılık yüzdesi bir GELECEK "
+            "GARANTİSİ değildir — hissenin son 1 yıllık geçmiş fiyat "
+            "hareketlerinde benzer büyüklükteki değişimlerin kaç kez "
+            "gerçekleştiğinin (tarihsel sıklık) oranıdır. Geçmişte sık "
+            "görülmesi gelecekte de aynı sıklıkla olacağı anlamına gelmez. "
+            "Yüksek oynaklık (spekülatif) hem büyük kazanç hem büyük kayıp "
+            "riski taşır."
+        ),
+    }
+
+
 def analyze(raw_symbol: str) -> dict:
     ticker = normalize_ticker(raw_symbol)
 
@@ -172,18 +279,35 @@ def analyze(raw_symbol: str) -> dict:
     fund_verdict, fund_notes = evaluate_fundamentals(fundamentals)
 
     timeframes = {}
+    daily_df = None
     for key, cfg in TIMEFRAMES.items():
         df = fetch_data(ticker, cfg["period"], cfg["interval"])
-        timeframes[key] = compute_timeframe(df, fund_verdict, cfg["label"], cfg["history_points"])
+        timeframes[key] = compute_timeframe(
+            df, fund_verdict, cfg["label"], cfg["history_points"], cfg["is_intraday"]
+        )
+        if key == "kisa_vadeli":
+            daily_df = df
 
     consistency_note = build_consistency_note(timeframes["kisa_vadeli"], timeframes["uzun_vadeli"])
 
+    price = timeframes["kisa_vadeli"]["price"]
+    daily_close = daily_df["Close"]
+    daily_returns = daily_close.pct_change().dropna()
+    volatility_pct = float(daily_returns.std()) * (252 ** 0.5) * 100
+    levels = compute_levels(daily_df, price)
+
+    genel_tavsiye = build_overall_recommendation(
+        timeframes["saatlik"], timeframes["kisa_vadeli"], volatility_pct, levels, price, daily_close
+    )
+
     return {
         "ticker": ticker,
-        "price": timeframes["kisa_vadeli"]["price"],
+        "price": price,
+        "saatlik": timeframes["saatlik"],
         "kisa_vadeli": timeframes["kisa_vadeli"],
         "uzun_vadeli": timeframes["uzun_vadeli"],
         "consistency_note": consistency_note,
+        "genel_tavsiye": genel_tavsiye,
         "fundamentals": fundamentals,
         "fund_verdict": fund_verdict,
         "fund_notes": fund_notes,
