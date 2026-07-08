@@ -1,12 +1,14 @@
 """
-Mevcut analiz motorunu (saatlik+günlük birleşik AL/SAT önerisi) tüm
-taranan hisselere uygulayıp, yükselme potansiyeli en yüksek görünenleri
-listeler.
+BIST100'e yakın kapsamda taranan tüm hisseler için "yükselme potansiyeli"
+sıralaması üretir. AL/SAT filtrelemesi YAPMAZ — her hisse için teknik
+durum (destek yakınlığı, önündeki direnç), geçmiş fiyat davranışına dayalı
+tarihsel olasılık ve güncel kritik haberleri derleyip sıralar. En yüksek
+potansiyelli hisse en üstte olacak şekilde HER ZAMAN bir liste döner.
 
-ÖNEMLİ: Bu bir yatırım tavsiyesi değildir. "Olasılık", hissenin kendi
-geçmiş fiyat hareketlerinde benzer büyüklükteki değişimlerin ne sıklıkla
-gerçekleştiğine dayanan TARİHSEL bir sıklık ölçüsüdür — gelecek için bir
-garanti ya da kesin tahmin İÇERMEZ.
+ÖNEMLİ: "% olasılık", hissenin kendi geçmiş fiyat hareketlerinde benzer
+büyüklükteki değişimlerin ne sıklıkla gerçekleştiğine dayanan TARİHSEL bir
+sıklık ölçüsüdür — gelecek için garanti ya da kesin tahmin İÇERMEZ. Bu bir
+yatırım tavsiyesi değildir.
 
 Tüm hisseleri her istekte yeniden hesaplamak hem yavaş hem Yahoo Finance
 rate-limit riskini artıracağı için sonuçlar bellek-içi önbellekte tutulur
@@ -17,26 +19,30 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
-from analysis import analyze
+from analysis import compute_timeframe, estimate_move_probability, fetch_data, normalize_ticker
+from levels import compute_levels
+from news import get_news_for_symbol
 from risky_stocks import CURATED_TICKERS
 
-# CURATED_TICKERS (risky_stocks.py) ~28 hisseyle sınırlı. Bu tarama için
-# BIST100/BIST30'da yaygın bilinen, likit hisselerle kapsamı genişletiyoruz.
-# NOT: TradingView gibi sitelerin canlı hisse listesini otomatik olarak
-# kazımak (scraping) hem kullanım şartlarına aykırı olur hem kırılgan bir
-# bağımlılık yaratır; bunun yerine bilinen BIST100/BIST30 bileşenlerinden
-# oluşan sabit bir liste kullanılır. Sembol yanlış/pasif olsa bile analiz
-# sessizce atlanır (None döner), bu yüzden listeye geniş yaklaşılabilir.
+# CURATED_TICKERS (risky_stocks.py) ~28 hisseyle sınırlı. BIST100'e daha
+# yakın bir kapsam için bilinen BIST100/BIST30 bileşenleriyle genişletiyoruz.
+# NOT: TradingView gibi sitelerin canlı listesini otomatik kazımak
+# (scraping) hem kullanım şartlarına aykırı olur hem kırılgan bir bağımlılık
+# yaratır; bunun yerine bilinen BIST100/BIST30 hisselerinden oluşan sabit
+# bir liste kullanılır. Sembol yanlış/pasif olsa bile analiz sessizce
+# atlanır, bu yüzden listeye geniş yaklaşılabilir.
 EXTRA_TICKERS = [
     "YKBNK", "HALKB", "VAKBN", "TSKB", "ALBRK",
-    "SAHOL", "ALARK", "ENKAI", "TKFEN", "DOHOL",
-    "TTRAK", "OTKAR", "KARSN", "KRDMD", "ISDMR",
+    "SAHOL", "ALARK", "ENKAI", "TKFEN", "DOHOL", "AGHOL",
+    "TTRAK", "OTKAR", "KARSN", "KRDMD", "ISDMR", "ASUZU", "EGEEN", "CEMTS",
     "SOKM", "CCOLA", "MAVI",
-    "TCELL", "TTKOM",
-    "AKSEN", "ZOREN",
+    "TCELL", "TTKOM", "LOGO", "NETAS", "INDES",
+    "AKSEN", "ZOREN", "GWIND", "NTGAZ",
     "AKSA", "GUBRF", "HEKTS", "ALKIM", "BAGFS",
-    "CIMSA", "OYAKC", "BRSAN", "BRISA",
-    "ISGYO", "YATAS", "GOLTS",
+    "CIMSA", "OYAKC", "BRSAN", "BRISA", "KARTN", "IZMDC",
+    "ISGYO", "YATAS", "GOLTS", "SNGYO", "TRGYO", "KLGYO", "PSGYO",
+    "ANSGR", "TURSG", "SKBNK", "ISMEN", "GLYHO",
+    "DEVA", "ECILC", "SELEC", "MPARK",
 ]
 
 SCAN_TICKERS = list(dict.fromkeys(CURATED_TICKERS + EXTRA_TICKERS))
@@ -46,43 +52,91 @@ CACHE_TTL_SECONDS = 3600
 _cache: dict = {"timestamp": 0.0, "picks": []}
 
 
-def _evaluate_pick(base_symbol: str) -> Optional[dict]:
+def _evaluate_stock(base_symbol: str) -> Optional[dict]:
     try:
-        result = analyze(base_symbol)
+        ticker = normalize_ticker(base_symbol)
+        df = fetch_data(ticker, period="1y", interval="1d")
     except Exception:
         return None
 
-    gt = result.get("genel_tavsiye")
-    if not gt or not gt.get("is_buy_signal") or not gt.get("target") or not gt.get("probability"):
-        return None
+    price = float(df["Close"].iloc[-1])
+    daily_close = df["Close"]
+    returns = daily_close.pct_change().dropna()
+    volatility_pct = float(returns.std()) * (252 ** 0.5) * 100 if len(returns) > 1 else 0.0
+
+    levels = compute_levels(df, price)
+    resistance_levels = levels["resistance_levels"]
+    support_levels = levels["support_levels"]
+
+    has_resistance_overhead = bool(resistance_levels)
+    if resistance_levels:
+        target_level = resistance_levels[0]["level"]
+    else:
+        year_high = float(df["High"].max())
+        target_level = year_high if year_high > price * 1.01 else None
+
+    probability = estimate_move_probability(daily_close, price, target_level) if target_level else None
+
+    if support_levels:
+        support_level = support_levels[0]["level"]
+        support_distance_pct = round((price - support_level) / price * 100, 1)
+    else:
+        support_level = None
+        support_distance_pct = None
+
+    try:
+        trend = compute_timeframe(df, "KARIŞIK/NÖTR", "Günlük", history_points=1)
+        trend_signal = trend["signal"]
+    except Exception:
+        trend_signal = "BEKLE"
+
+    critical_categories: list = []
+    try:
+        news = get_news_for_symbol(base_symbol)
+        seen = set()
+        for note in news["critical_notes"]:
+            for c in note["categories"]:
+                if c not in seen:
+                    seen.add(c)
+                    critical_categories.append(c)
+    except Exception:
+        pass
 
     return {
-        "ticker": result["ticker"],
-        "price": result["price"],
-        "signal": gt["signal"],
-        "reason": gt["reason"],
-        "target_level": gt["target"]["level"],
-        "target_pct": gt["target"]["target_pct"],
-        "probability_pct": gt["probability"]["probability_pct"],
-        "volatility_pct": gt["volatility_pct"],
-        "is_speculative": gt["is_speculative"],
+        "ticker": ticker,
+        "price": round(price, 4),
+        "trend_signal": trend_signal,
+        "target_level": round(target_level, 4) if target_level is not None else None,
+        "target_pct": round((target_level - price) / price * 100, 1) if target_level is not None else None,
+        "probability_pct": probability["probability_pct"] if probability else None,
+        "has_resistance_overhead": has_resistance_overhead,
+        "support_level": round(support_level, 4) if support_level is not None else None,
+        "support_distance_pct": support_distance_pct,
+        "volatility_pct": round(volatility_pct, 1),
+        "critical_news_categories": critical_categories,
     }
+
+
+def _sort_key(p: dict):
+    prob = p["probability_pct"] if p["probability_pct"] is not None else -1.0
+    support_dist = p["support_distance_pct"] if p["support_distance_pct"] is not None else 9999.0
+    return (prob, -support_dist)
 
 
 def _compute_all_picks() -> list:
     picks = []
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(_evaluate_pick, sym): sym for sym in SCAN_TICKERS}
+        futures = {executor.submit(_evaluate_stock, sym): sym for sym in SCAN_TICKERS}
         for future in as_completed(futures):
             pick = future.result()
             if pick is not None:
                 picks.append(pick)
 
-    picks.sort(key=lambda p: (p["probability_pct"], p["target_pct"]), reverse=True)
+    picks.sort(key=_sort_key, reverse=True)
     return picks
 
 
-def get_top_picks(top_n: int = 10, force_refresh: bool = False) -> dict:
+def get_top_picks(top_n: int = 15, force_refresh: bool = False) -> dict:
     now = time.time()
     is_stale = force_refresh or (now - _cache["timestamp"] >= CACHE_TTL_SECONDS) or not _cache["picks"]
 
@@ -97,13 +151,17 @@ def get_top_picks(top_n: int = 10, force_refresh: bool = False) -> dict:
         "last_updated_unix": _cache["timestamp"],
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
         "note": (
-            "Bu liste, saatlik ve günlük teknik sinyali birlikte AL yönünde "
-            "olan ve tespit edilebilir bir direnç hedefi bulunan hisseleri, "
-            "bu hedefe ulaşmanın geçmişte ne sıklıkla gerçekleştiğine "
-            "(tarihsel sıklık) göre sıralar. Bu bir yatırım tavsiyesi ya da "
-            "gelecek garantisi DEĞİLDİR. Tüm BIST değil, bilinen BIST100/"
-            f"BIST30 hisselerinden oluşan {len(SCAN_TICKERS)} hisselik bir "
-            "örneklem taranmıştır. Sonuçlar en fazla saatte bir yeniden "
-            "hesaplanır."
+            "Taranan tüm hisseler yükselme potansiyeline göre sıralanır: "
+            "% olasılık, hissenin son 1 yılda benzer büyüklükteki hareketleri "
+            "ne sıklıkla yaptığına dayanan TARİHSEL bir sıklık ölçüsüdür — "
+            "gelecek garantisi DEĞİLDİR. Hedef seviye, önündeki en yakın "
+            "dirençtir; direnç yoksa 1 yıllık zirve referans alınır. Destek "
+            "yakınlığı, mevcut fiyatın en yakın destek seviyesine uzaklığıdır "
+            "(küçük olması desteğe yakın demektir). Kritik haberler basit "
+            "anahtar kelime eşleştirmesiyle tespit edilir, duygu analizi "
+            "değildir. Bu bir yatırım tavsiyesi değildir. Tüm BIST değil, "
+            f"bilinen BIST100/BIST30 hisselerinden oluşan {len(SCAN_TICKERS)} "
+            "hisselik bir örneklem taranmıştır. Sonuçlar en fazla saatte bir "
+            "yeniden hesaplanır."
         ),
     }
