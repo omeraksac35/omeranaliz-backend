@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
-from analysis import compute_timeframe, estimate_move_probability, fetch_data, normalize_ticker
+from analysis import estimate_move_probability, fetch_data, normalize_ticker
 from levels import compute_levels
 from news import get_news_for_symbol
 from risky_stocks import CURATED_TICKERS
@@ -84,11 +84,16 @@ def _evaluate_stock(base_symbol: str) -> Optional[dict]:
         support_level = None
         support_distance_pct = None
 
-    try:
-        trend = compute_timeframe(df, "KARIŞIK/NÖTR", "Günlük", history_points=1)
-        trend_signal = trend["signal"]
-    except Exception:
-        trend_signal = "BEKLE"
+    # Bu liste zaten "yükselme potansiyeli" üzerine kurulu — hedef seviye
+    # tanımı gereği her zaman mevcut fiyatın üzerindedir. Bu yüzden ayrı bir
+    # (bazen çelişkili görünen) SAT/BEKLE teknik sinyali yerine, potansiyelin
+    # olup olmadığına ve olasılık gücüne göre tutarlı bir etiket kullanılır.
+    if target_level is None:
+        potential_label = "BEKLE"
+    elif probability and probability["probability_pct"] >= 55:
+        potential_label = "GÜÇLÜ AL"
+    else:
+        potential_label = "AL"
 
     critical_categories: list = []
     try:
@@ -105,7 +110,7 @@ def _evaluate_stock(base_symbol: str) -> Optional[dict]:
     return {
         "ticker": ticker,
         "price": round(price, 4),
-        "trend_signal": trend_signal,
+        "potential_label": potential_label,
         "target_level": round(target_level, 4) if target_level is not None else None,
         "target_pct": round((target_level - price) / price * 100, 1) if target_level is not None else None,
         "probability_pct": probability["probability_pct"] if probability else None,
