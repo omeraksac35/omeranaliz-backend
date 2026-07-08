@@ -6,6 +6,7 @@ from chart import get_chart
 from news import get_news_for_symbol
 from risky_stocks import get_risk_profile, get_risky_stocks
 from ticker_tape import get_ticker_tape
+from top_picks import get_top_picks
 
 app = FastAPI(title="BIST Teknik+Temel Analiz API")
 
@@ -75,3 +76,11 @@ def get_ticker_tape_endpoint():
         return get_ticker_tape()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ticker verisi alınırken hata: {exc}")
+
+
+@app.get("/top-picks")
+def get_top_picks_endpoint(top_n: int = 10, force_refresh: bool = False):
+    try:
+        return get_top_picks(top_n, force_refresh)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Önerilen hisseler alınırken hata: {exc}")
