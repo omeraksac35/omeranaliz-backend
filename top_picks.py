@@ -43,6 +43,12 @@ EXTRA_TICKERS = [
     "ISGYO", "YATAS", "GOLTS", "SNGYO", "TRGYO", "KLGYO", "PSGYO",
     "ANSGR", "TURSG", "SKBNK", "ISMEN", "GLYHO",
     "DEVA", "ECILC", "SELEC", "MPARK",
+    # İkinci genişletme turu: BIST100 kapsamını daha da artırmak için
+    "AKFYE", "AYDEM", "ALFAS", "CWENE", "BERA", "QUAGR", "QNBTR",
+    "MIATK", "REEDR", "FONET", "OBASE", "PAPIL", "HTTBT",
+    "ARENA", "DGATE", "LINK", "KFEIN",
+    "VAKKO", "TMSN", "EGSER", "USAK", "KUTPO",
+    "AKGRT", "RAYSG", "KONTR", "SUWEN", "KAYSE",
 ]
 
 SCAN_TICKERS = list(dict.fromkeys(CURATED_TICKERS + EXTRA_TICKERS))
@@ -84,13 +90,17 @@ def _evaluate_stock(base_symbol: str) -> Optional[dict]:
         support_level = None
         support_distance_pct = None
 
+    target_pct = round((target_level - price) / price * 100, 1) if target_level is not None else None
+
     # Bu liste zaten "yükselme potansiyeli" üzerine kurulu — hedef seviye
     # tanımı gereği her zaman mevcut fiyatın üzerindedir. Bu yüzden ayrı bir
     # (bazen çelişkili görünen) SAT/BEKLE teknik sinyali yerine, potansiyelin
-    # olup olmadığına ve olasılık gücüne göre tutarlı bir etiket kullanılır.
-    if target_level is None:
+    # büyüklüğüne (yüzde kaç gidebileceğine) ve olasılık gücüne göre tutarlı
+    # bir etiket kullanılır. %1'in altındaki hedefler önemsiz kabul edilip
+    # "GÜÇLÜ AL" olarak önerilmez — bu boyutta bir hareket gürültü sayılır.
+    if target_pct is None or target_pct < 1.0:
         potential_label = "BEKLE"
-    elif probability and probability["probability_pct"] >= 55:
+    elif target_pct >= 5.0 and probability and probability["probability_pct"] >= 45:
         potential_label = "GÜÇLÜ AL"
     else:
         potential_label = "AL"
@@ -112,7 +122,7 @@ def _evaluate_stock(base_symbol: str) -> Optional[dict]:
         "price": round(price, 4),
         "potential_label": potential_label,
         "target_level": round(target_level, 4) if target_level is not None else None,
-        "target_pct": round((target_level - price) / price * 100, 1) if target_level is not None else None,
+        "target_pct": target_pct,
         "probability_pct": probability["probability_pct"] if probability else None,
         "has_resistance_overhead": has_resistance_overhead,
         "support_level": round(support_level, 4) if support_level is not None else None,
@@ -123,14 +133,24 @@ def _evaluate_stock(base_symbol: str) -> Optional[dict]:
 
 
 def _sort_key(p: dict):
-    prob = p["probability_pct"] if p["probability_pct"] is not None else -1.0
-    support_dist = p["support_distance_pct"] if p["support_distance_pct"] is not None else 9999.0
-    return (prob, -support_dist)
+    """
+    Sadece "en çok artabilecek" hisseyi öne çıkarmak yanıltıcı olur: %50
+    hedefi olan ama tarihte neredeyse hiç gerçekleşmemiş (%1-2 olasılık)
+    bir hareket, %5 hedefi olup makul sıklıkla (%40-50) gerçekleşen bir
+    hareketten daha "değerli" değildir. Bu yüzden "beklenen değer" mantığı
+    kullanılır: hedef yüzdesi × olasılık yüzdesi. %1'in altındaki hedefler
+    gürültü kabul edilip listenin en altına düşer.
+    """
+    target_pct = p["target_pct"]
+    prob = p["probability_pct"] if p["probability_pct"] is not None else 0.0
+    if target_pct is None or target_pct < 1.0:
+        return (-999.0, 0.0)
+    return (target_pct * prob, target_pct)
 
 
 def _compute_all_picks() -> list:
     picks = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=14) as executor:
         futures = {executor.submit(_evaluate_stock, sym): sym for sym in SCAN_TICKERS}
         for future in as_completed(futures):
             pick = future.result()
@@ -156,17 +176,19 @@ def get_top_picks(top_n: int = 15, force_refresh: bool = False) -> dict:
         "last_updated_unix": _cache["timestamp"],
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
         "note": (
-            "Taranan tüm hisseler yükselme potansiyeline göre sıralanır: "
+            "Taranan tüm hisseler önce hedefe kadar ne kadar artabileceğine "
+            "(%), sonra bu seviyeye ulaşma olasılığına göre sıralanır. "
             "% olasılık, hissenin son 1 yılda benzer büyüklükteki hareketleri "
             "ne sıklıkla yaptığına dayanan TARİHSEL bir sıklık ölçüsüdür — "
-            "gelecek garantisi DEĞİLDİR. Hedef seviye, önündeki en yakın "
-            "dirençtir; direnç yoksa 1 yıllık zirve referans alınır. Destek "
-            "yakınlığı, mevcut fiyatın en yakın destek seviyesine uzaklığıdır "
-            "(küçük olması desteğe yakın demektir). Kritik haberler basit "
-            "anahtar kelime eşleştirmesiyle tespit edilir, duygu analizi "
-            "değildir. Bu bir yatırım tavsiyesi değildir. Tüm BIST değil, "
-            f"bilinen BIST100/BIST30 hisselerinden oluşan {len(SCAN_TICKERS)} "
-            "hisselik bir örneklem taranmıştır. Sonuçlar en fazla saatte bir "
-            "yeniden hesaplanır."
+            "gelecek garantisi DEĞİLDİR. %1'in altındaki hedefler önemsiz "
+            "kabul edilip 'GÜÇLÜ AL' olarak önerilmez. Hedef seviye, "
+            "önündeki en yakın dirençtir; direnç yoksa 1 yıllık zirve "
+            "referans alınır. Destek yakınlığı, mevcut fiyatın en yakın "
+            "destek seviyesine uzaklığıdır (küçük olması desteğe yakın "
+            "demektir). Kritik haberler basit anahtar kelime eşleştirmesiyle "
+            "tespit edilir, duygu analizi değildir. Bu bir yatırım tavsiyesi "
+            "değildir. Tüm BIST değil, bilinen BIST100/BIST30 hisselerinden "
+            f"oluşan {len(SCAN_TICKERS)} hisselik bir örneklem taranmıştır. "
+            "Sonuçlar en fazla saatte bir yeniden hesaplanır."
         ),
     }
