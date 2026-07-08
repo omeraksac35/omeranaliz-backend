@@ -20,6 +20,27 @@ from typing import Optional
 from analysis import analyze
 from risky_stocks import CURATED_TICKERS
 
+# CURATED_TICKERS (risky_stocks.py) ~28 hisseyle sınırlı. Bu tarama için
+# BIST100/BIST30'da yaygın bilinen, likit hisselerle kapsamı genişletiyoruz.
+# NOT: TradingView gibi sitelerin canlı hisse listesini otomatik olarak
+# kazımak (scraping) hem kullanım şartlarına aykırı olur hem kırılgan bir
+# bağımlılık yaratır; bunun yerine bilinen BIST100/BIST30 bileşenlerinden
+# oluşan sabit bir liste kullanılır. Sembol yanlış/pasif olsa bile analiz
+# sessizce atlanır (None döner), bu yüzden listeye geniş yaklaşılabilir.
+EXTRA_TICKERS = [
+    "YKBNK", "HALKB", "VAKBN", "TSKB", "ALBRK",
+    "SAHOL", "ALARK", "ENKAI", "TKFEN", "DOHOL",
+    "TTRAK", "OTKAR", "KARSN", "KRDMD", "ISDMR",
+    "SOKM", "CCOLA", "MAVI",
+    "TCELL", "TTKOM",
+    "AKSEN", "ZOREN",
+    "AKSA", "GUBRF", "HEKTS", "ALKIM", "BAGFS",
+    "CIMSA", "OYAKC", "BRSAN", "BRISA",
+    "ISGYO", "YATAS", "GOLTS",
+]
+
+SCAN_TICKERS = list(dict.fromkeys(CURATED_TICKERS + EXTRA_TICKERS))
+
 CACHE_TTL_SECONDS = 3600
 
 _cache: dict = {"timestamp": 0.0, "picks": []}
@@ -50,8 +71,8 @@ def _evaluate_pick(base_symbol: str) -> Optional[dict]:
 
 def _compute_all_picks() -> list:
     picks = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(_evaluate_pick, sym): sym for sym in CURATED_TICKERS}
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(_evaluate_pick, sym): sym for sym in SCAN_TICKERS}
         for future in as_completed(futures):
             pick = future.result()
             if pick is not None:
@@ -71,7 +92,7 @@ def get_top_picks(top_n: int = 10, force_refresh: bool = False) -> dict:
 
     return {
         "picks": _cache["picks"][:top_n],
-        "scanned_count": len(CURATED_TICKERS),
+        "scanned_count": len(SCAN_TICKERS),
         "matched_count": len(_cache["picks"]),
         "last_updated_unix": _cache["timestamp"],
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
@@ -80,8 +101,9 @@ def get_top_picks(top_n: int = 10, force_refresh: bool = False) -> dict:
             "olan ve tespit edilebilir bir direnç hedefi bulunan hisseleri, "
             "bu hedefe ulaşmanın geçmişte ne sıklıkla gerçekleştiğine "
             "(tarihsel sıklık) göre sıralar. Bu bir yatırım tavsiyesi ya da "
-            "gelecek garantisi DEĞİLDİR. Tüm BIST değil, seçilmiş "
-            f"{len(CURATED_TICKERS)} hisselik bir örneklem taranmıştır. "
-            "Sonuçlar en fazla saatte bir yeniden hesaplanır."
+            "gelecek garantisi DEĞİLDİR. Tüm BIST değil, bilinen BIST100/"
+            f"BIST30 hisselerinden oluşan {len(SCAN_TICKERS)} hisselik bir "
+            "örneklem taranmıştır. Sonuçlar en fazla saatte bir yeniden "
+            "hesaplanır."
         ),
     }
